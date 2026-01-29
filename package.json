@@ -1,0 +1,27 @@
+{
+  "name": "juanpablo-portfolio",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npx vite",
+    "build": "npx vite build",
+    "preview": "npx vite preview",
+    "generate-media": "bash scripts/generate-media.sh",
+    "serve-hls": "node server/serve-static.js 8081 media/hls",
+    "serve-dash": "node server/serve-static.js 8082 media/dash",
+    "serve-media": "node server/serve-both.js"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "vite": "^5.4.11"
+  }
+}
