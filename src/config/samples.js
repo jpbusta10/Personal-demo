@@ -38,8 +38,8 @@ export const LOCAL_SERVERS = {
 
 // Use remote by default so demos work out of the box
 export const USE_LOCAL_SAMPLES = false
-// Set true after running: npm run generate-media && npm run serve-media
-export const USE_LOCAL_SERVERS = false
+// Use local HLS/DASH from cs2.mp4 (run: npm run generate-media && npm run serve-media)
+export const USE_LOCAL_SERVERS = true
 
 export function getSampleUrl(type) {
   if (USE_LOCAL_SERVERS) return LOCAL_SERVERS[type]

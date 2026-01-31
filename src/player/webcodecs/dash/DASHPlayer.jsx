@@ -6,6 +6,7 @@ import { VideoRenderer } from '../video/videoRenderer.js'
 import { AudioDecoderWrapper, isAudioDecoderSupported } from '../audio/AudioDecoderWrapper.js'
 import { AudioRenderer } from '../audio/audioRenderer.js'
 import { getSampleUrl } from '../../../config/samples.js'
+import { usePlayerLog } from '../../../components/VideoDemos/PlayerLogContext.jsx'
 
 /**
  * Web Codecs + DASH Player Component (CMAF/fMP4)
@@ -14,105 +15,139 @@ export default function DASHPlayer({ url, VideoWrapper }) {
   const canvasRef = useRef(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  
+  const logCtx = usePlayerLog()
+  const addLog = logCtx ? (level, message, detail) => logCtx.addLog(level, message, detail) : () => {}
+
   useEffect(() => {
     if (!isVideoDecoderSupported()) {
+      addLog('error', 'Web Codecs VideoDecoder not supported. Try Chrome 94+ or Edge 94+.')
       setError('Web Codecs VideoDecoder not supported in this browser. Try Chrome 94+ or Edge 94+.')
       setLoading(false)
       return
     }
-    
+
     const canvas = canvasRef.current
     if (!canvas) return
-    
+
     const abortController = new AbortController()
+    const decoderRef = { current: null }
     const sourceUrl = url || getSampleUrl('DASH')
-    
+
     async function init() {
       try {
         setLoading(true)
         setError(null)
-        
-        console.log('[WebCodecs DASH] Loading manifest:', sourceUrl)
-        
+        addLog('info', 'Loading manifest', sourceUrl)
+
         // Load manifest
         let manifest
         try {
           manifest = await loadDashManifest(sourceUrl, abortController.signal)
         } catch (err) {
+          if (err.name !== 'AbortError' && !/abort/i.test(err.message || '')) {
+            addLog('error', err.message || 'Failed to fetch manifest')
+          }
           if (err.name === 'TypeError') {
             throw new Error('CORS error: Cannot fetch DASH manifest.')
           }
           throw err
         }
-        
-        console.log('[WebCodecs DASH] Manifest:', manifest)
-        
+
+        addLog('info', 'Manifest loaded', { segments: manifest.segments?.length, hasInit: !!manifest.initSegment })
+
         if (!manifest.segments.length) {
+          addLog('error', 'No segments found in DASH manifest')
           throw new Error('No segments found in DASH manifest')
         }
-        
+
         if (!manifest.initSegment) {
+          addLog('error', 'No init segment found in DASH manifest')
           throw new Error('No init segment found in DASH manifest')
         }
-        
+
         // Create components
         const demuxer = new Demuxer()
         const videoRenderer = new VideoRenderer(canvas)
-        
-        // Create video decoder
+
+        // Create video decoder with timed frame rendering
         const videoDecoder = new VideoDecoderWrapper(
-          (frame) => videoRenderer.renderFrame(frame),
-          (err) => console.error('[WebCodecs] Video decode error:', err)
+          (frame) => videoRenderer.queueFrame(frame),
+          (err) => addLog('error', 'Video decode error', err?.message)
         )
-        
+        decoderRef.current = videoDecoder
+
         // Fetch and parse init segment
-        console.log('[WebCodecs DASH] Fetching init:', manifest.initSegment)
+        addLog('info', 'Fetching init segment', manifest.initSegment)
         let initData
         try {
-          const initResponse = await fetch(manifest.initSegment, { 
-            signal: abortController.signal 
+          const initResponse = await fetch(manifest.initSegment, {
+            signal: abortController.signal
           })
           if (!initResponse.ok) {
+            addLog('error', `Init segment HTTP ${initResponse.status}`)
             throw new Error(`Failed to fetch init segment: ${initResponse.status}`)
           }
           initData = await initResponse.arrayBuffer()
         } catch (err) {
+          addLog('error', err.message || 'Failed to fetch init segment')
           if (err.name === 'TypeError') {
             throw new Error('CORS error: Cannot fetch init segment.')
           }
           throw err
         }
-        
-        console.log('[WebCodecs DASH] Init size:', initData.byteLength)
+
+        addLog('info', `Init segment size: ${initData.byteLength} bytes`)
         const trackConfigs = demuxer.parseInit(initData)
-        console.log('[WebCodecs DASH] Track configs:', trackConfigs)
-        
+        addLog('info', 'Track configs', trackConfigs?.video ? { 
+          hasVideo: true, 
+          codec: trackConfigs.video.codec,
+          trackId: trackConfigs.video.trackId,
+          timescale: trackConfigs.video.timescale,
+          width: trackConfigs.video.codedWidth,
+          height: trackConfigs.video.codedHeight,
+          hasDescription: !!trackConfigs.video.description
+        } : { hasVideo: false })
+
         // Configure video decoder
         if (trackConfigs.video) {
-          const configured = videoDecoder.configure(trackConfigs.video)
+          const configured = await videoDecoder.configure(trackConfigs.video)
           if (!configured) {
+            addLog('error', 'Failed to configure video decoder')
             throw new Error('Failed to configure video decoder')
           }
         } else {
+          addLog('error', 'No video track found in init segment')
           throw new Error('No video track found in init segment')
         }
-        
+
         setLoading(false)
-        
+        addLog('info', `Loading ${manifest.segments.length} segments`)
+
         // Process segments
-        for (const segmentUrl of manifest.segments) {
+        for (let i = 0; i < manifest.segments.length; i++) {
           if (abortController.signal.aborted) break
-          
+          const segmentUrl = manifest.segments[i]
+
           try {
             const response = await fetch(segmentUrl, { signal: abortController.signal })
-            if (!response.ok) continue
-            
+            if (!response.ok) {
+              addLog('warn', `Segment ${i} HTTP ${response.status}`)
+              continue
+            }
             const segmentData = await response.arrayBuffer()
             if (abortController.signal.aborted) break
-            
+
             const { video } = demuxer.parseMedia(segmentData)
-            
+
+            // Log segment parsing results for first segment
+            if (i === 0) {
+              addLog('info', `Segment 0 parsed`, { 
+                videoSamples: video.length,
+                firstSampleType: video[0]?.type,
+                firstSampleSize: video[0]?.data?.byteLength
+              })
+            }
+
             // Decode video samples
             for (const sample of video) {
               if (abortController.signal.aborted) break
@@ -120,27 +155,29 @@ export default function DASHPlayer({ url, VideoWrapper }) {
             }
           } catch (err) {
             if (err.name === 'AbortError') break
-            console.warn('[WebCodecs DASH] Segment error:', err.message)
+            addLog('warn', `Segment ${i}: ${err.message}`)
           }
         }
-        
-        // Flush
+
+        addLog('info', 'Flushing decoder')
         await videoDecoder.flush()
         videoDecoder.close()
-        
+        addLog('info', 'Playback ready')
       } catch (err) {
-        if (err.name !== 'AbortError') {
-          console.error('[WebCodecs DASH] Error:', err)
+        if (err.name !== 'AbortError' && !/abort/i.test(err.message || '')) {
+          addLog('error', err.message)
           setError(err.message)
         }
         setLoading(false)
       }
     }
-    
+
     init()
-    
+
     return () => {
       abortController.abort()
+      decoderRef.current?.close()
+      decoderRef.current = null
     }
   }, [url])
   

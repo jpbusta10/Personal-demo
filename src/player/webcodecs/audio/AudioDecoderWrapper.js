@@ -20,6 +20,7 @@ export class AudioDecoderWrapper {
     this.decoder = null
     this.configured = false
     this.sampleCount = 0
+    this._closed = false
   }
   
   /**
@@ -68,8 +69,10 @@ export class AudioDecoderWrapper {
    * @param {{ type: string, timestamp: number, duration: number, data: Uint8Array }} sample
    */
   decode(sample) {
+    if (this._closed) return
     if (!this.decoder || !this.configured) return
-    
+    if (this.decoder.state === 'closed') return
+
     try {
       const chunk = new EncodedAudioChunk({
         type: sample.type === 'key' ? 'key' : 'delta',
@@ -101,6 +104,7 @@ export class AudioDecoderWrapper {
    * Close the decoder
    */
   close() {
+    this._closed = true
     if (this.decoder) {
       try {
         this.decoder.close()

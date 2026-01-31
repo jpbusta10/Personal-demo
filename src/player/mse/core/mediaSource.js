@@ -90,7 +90,8 @@ export function appendBuffer(sourceBuffer, data) {
     const onError = (e) => {
       sourceBuffer.removeEventListener('updateend', onUpdateEnd)
       sourceBuffer.removeEventListener('error', onError)
-      reject(new Error('SourceBuffer append error'))
+      const msg = (e?.target?.error?.message || e?.message) || 'SourceBuffer append error'
+      reject(new Error(msg))
     }
     
     sourceBuffer.addEventListener('updateend', onUpdateEnd)

@@ -45,15 +45,19 @@ export class Demuxer {
       audio: []
     }
     
-    // Parse video samples (track 0)
+    // Parse video samples using actual track ID and timescale from init segment
     if (this.videoConfig) {
-      const videoResult = parseMediaSegment(data, 0)
+      const videoTrackId = this.videoConfig.trackId || 1
+      const videoTimescale = this.videoConfig.timescale || 90000
+      const videoResult = parseMediaSegment(data, videoTrackId, videoTimescale)
       result.video = videoResult.samples
     }
     
-    // Parse audio samples (track 1)
+    // Parse audio samples using actual track ID and timescale from init segment
     if (this.audioConfig) {
-      const audioResult = parseMediaSegment(data, 1)
+      const audioTrackId = this.audioConfig.trackId || 2
+      const audioTimescale = this.audioConfig.timescale || 48000
+      const audioResult = parseMediaSegment(data, audioTrackId, audioTimescale)
       result.audio = audioResult.samples
     }
     

@@ -20,29 +20,21 @@ export class VideoDecoderWrapper {
     this.decoder = null
     this.configured = false
     this.frameCount = 0
+    /** Set synchronously in close() so decode() bails even if decoder state lags */
+    this._closed = false
   }
   
   /**
    * Configure the decoder with codec info from init segment
    * @param {{ codec: string, description: Uint8Array, codedWidth?: number, codedHeight?: number }} config
    */
-  configure(config) {
+  async configure(config) {
     if (!isVideoDecoderSupported()) {
       this.onError?.(new Error('VideoDecoder not supported'))
       return false
     }
     
     try {
-      this.decoder = new VideoDecoder({
-        output: (frame) => {
-          this.frameCount++
-          this.onFrame?.(frame)
-        },
-        error: (e) => {
-          this.onError?.(e)
-        }
-      })
-      
       const decoderConfig = {
         codec: config.codec,
         codedWidth: config.codedWidth || 1920,
@@ -53,6 +45,42 @@ export class VideoDecoderWrapper {
       if (config.description) {
         decoderConfig.description = config.description
       }
+      
+      // Check if configuration is supported before creating decoder
+      try {
+        const support = await VideoDecoder.isConfigSupported(decoderConfig)
+        if (!support.supported) {
+          console.error('VideoDecoder config not supported:', decoderConfig)
+          this.onError?.(new Error(`Codec ${config.codec} not supported`))
+          return false
+        }
+        console.log('VideoDecoder config supported:', {
+          codec: config.codec,
+          width: decoderConfig.codedWidth,
+          height: decoderConfig.codedHeight,
+          hasDescription: !!decoderConfig.description
+        })
+      } catch (supportErr) {
+        console.warn('Could not check config support:', supportErr)
+      }
+      
+      this.decoder = new VideoDecoder({
+        output: (frame) => {
+          this.frameCount++
+          this.onFrame?.(frame)
+        },
+        error: (e) => {
+          // Include more details about the error
+          const errorDetails = {
+            message: e?.message,
+            name: e?.name,
+            code: e?.code,
+            state: this.decoder?.state
+          }
+          console.error('VideoDecoder error:', errorDetails)
+          this.onError?.(e)
+        }
+      })
       
       this.decoder.configure(decoderConfig)
       this.configured = true
@@ -68,16 +96,19 @@ export class VideoDecoderWrapper {
    * @param {{ type: string, timestamp: number, duration: number, data: Uint8Array }} sample
    */
   decode(sample) {
+    if (this._closed) return
     if (!this.decoder || !this.configured) return
-    
+    if (this.decoder.state === 'closed') return
+
     try {
+      const data = sample.data.byteLength > 0 ? new Uint8Array(sample.data) : sample.data
+      const duration = sample.duration > 0 ? sample.duration : 1
       const chunk = new EncodedVideoChunk({
         type: sample.type === 'key' ? 'key' : 'delta',
         timestamp: sample.timestamp,
-        duration: sample.duration,
-        data: sample.data
+        duration,
+        data
       })
-      
       this.decoder.decode(chunk)
     } catch (e) {
       this.onError?.(e)
@@ -101,6 +132,7 @@ export class VideoDecoderWrapper {
    * Close the decoder
    */
   close() {
+    this._closed = true
     if (this.decoder) {
       try {
         this.decoder.close()

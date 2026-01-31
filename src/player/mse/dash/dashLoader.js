@@ -16,10 +16,13 @@ import {
 /**
  * DASH MSE Player Controller
  */
+function noop() {}
+
 export class DASHLoader {
-  constructor(video, url) {
+  constructor(video, url, options = {}) {
     this.video = video
     this.url = url
+    this.onLog = typeof options.onLog === 'function' ? options.onLog : noop
     this.mediaSource = null
     this.objectUrl = null
     this.sourceBuffer = null
@@ -28,7 +31,11 @@ export class DASHLoader {
     this.error = null
     this.progress = 0
   }
-  
+
+  _log(level, message, detail) {
+    this.onLog(level, message, detail)
+  }
+
   /**
    * Start loading and playing
    */
@@ -37,100 +44,100 @@ export class DASHLoader {
       this.loading = true
       this.error = null
       this.progress = 0
-      
-      // Check MSE support
+
       if (!isMSESupported()) {
+        this._log('error', 'MediaSource API not supported in this browser')
         throw new Error('MediaSource API not supported in this browser')
       }
-      
-      console.log('[DASH] Loading manifest:', this.url)
-      
-      // Load manifest
+
+      this._log('info', 'Loading manifest', this.url)
+
       let manifest
       try {
         manifest = await loadDashManifest(this.url, this.abortController.signal)
       } catch (err) {
+        if (err.name !== 'AbortError' && !/abort/i.test(err.message || '')) {
+          this._log('error', err.message || 'Failed to fetch manifest')
+        }
         if (err.name === 'TypeError' && err.message.includes('fetch')) {
           throw new Error('CORS error: Cannot fetch DASH manifest. Try using local samples.')
         }
         throw err
       }
-      
-      console.log('[DASH] Manifest loaded:', manifest)
-      
+
+      this._log('info', 'Manifest loaded', { segments: manifest.segments?.length, hasInit: !!manifest.initSegment })
+
       if (!manifest.segments.length) {
+        this._log('error', 'No segments found in DASH manifest')
         throw new Error('No segments found in DASH manifest')
       }
-      
-      // Create MediaSource
+
       const { mediaSource, objectUrl } = await createMediaSource(this.video)
       this.mediaSource = mediaSource
       this.objectUrl = objectUrl
-      
-      // Add source buffer
+
       const mimeType = manifest.mimeType || getSupportedVideoCodec()
-      console.log('[DASH] Using codec:', mimeType)
+      this._log('info', 'Using codec', mimeType)
       this.sourceBuffer = addSourceBuffer(mediaSource, mimeType)
-      
-      // Append init segment if present
+
       if (manifest.initSegment) {
-        console.log('[DASH] Fetching init segment:', manifest.initSegment)
+        this._log('info', 'Fetching init segment', manifest.initSegment)
         try {
-          const initResponse = await fetch(manifest.initSegment, { 
-            signal: this.abortController.signal 
+          const initResponse = await fetch(manifest.initSegment, {
+            signal: this.abortController.signal
           })
           if (!initResponse.ok) {
+            this._log('error', `Init segment HTTP ${initResponse.status}`)
             throw new Error(`Failed to fetch init segment: ${initResponse.status}`)
           }
           const initData = await initResponse.arrayBuffer()
-          console.log('[DASH] Init segment size:', initData.byteLength)
+          this._log('info', `Init segment size: ${initData.byteLength} bytes`)
           await appendBuffer(this.sourceBuffer, initData)
         } catch (err) {
+          this._log('error', err.message || 'Failed to fetch init segment')
           if (err.name === 'TypeError') {
             throw new Error('CORS error: Cannot fetch init segment. Try using local samples.')
           }
           throw err
         }
       }
-      
-      // Append media segments
+
       const total = manifest.segments.length
-      console.log('[DASH] Loading', total, 'segments')
-      
+      this._log('info', `Loading ${total} segments`)
+
       for (let i = 0; i < total; i++) {
         if (this.abortController.signal.aborted) break
-        
+
         try {
-          const response = await fetch(manifest.segments[i], { 
-            signal: this.abortController.signal 
+          const response = await fetch(manifest.segments[i], {
+            signal: this.abortController.signal
           })
           if (!response.ok) {
-            console.warn(`[DASH] Segment ${i} failed: ${response.status}`)
+            this._log('warn', `Segment ${i} failed: HTTP ${response.status}`)
             continue
           }
           const data = await response.arrayBuffer()
-          
+
           if (this.abortController.signal.aborted) break
-          
+
           await appendBuffer(this.sourceBuffer, data)
           this.progress = (i + 1) / total
         } catch (err) {
           if (err.name === 'AbortError') break
-          console.warn(`[DASH] Segment ${i} error:`, err.message)
+          this._log('warn', `Segment ${i}: ${err.message}`)
         }
       }
-      
-      // Signal end of stream
+
       if (!this.abortController.signal.aborted && this.mediaSource.readyState === 'open') {
         this.mediaSource.endOfStream()
-        console.log('[DASH] Playback ready')
+        this._log('info', 'Playback ready')
       }
-      
+
       this.loading = false
     } catch (err) {
-      if (err.name !== 'AbortError') {
+      if (err.name !== 'AbortError' && !/abort/i.test(err.message || '')) {
         this.error = err.message
-        console.error('[DASH] Load error:', err)
+        this._log('error', err.message)
       }
       this.loading = false
     }
@@ -153,6 +160,6 @@ export class DASHLoader {
 /**
  * Create a DASH loader instance
  */
-export function createDASHLoader(video, url) {
-  return new DASHLoader(video, url)
+export function createDASHLoader(video, url, options) {
+  return new DASHLoader(video, url, options)
 }

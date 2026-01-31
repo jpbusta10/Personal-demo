@@ -14,6 +14,7 @@ export class VideoRenderer {
     this.rendering = false
     this.lastFrameTime = 0
     this.startTime = 0
+    this.firstFrameTimestamp = null // For normalizing timestamps
     this.rafId = null
   }
   
@@ -22,6 +23,13 @@ export class VideoRenderer {
    * @param {VideoFrame} frame
    */
   queueFrame(frame) {
+    // Normalize timestamp relative to first frame
+    if (this.firstFrameTimestamp === null) {
+      this.firstFrameTimestamp = frame.timestamp
+    }
+    
+    // Store normalized timestamp for rendering
+    frame._normalizedTimestamp = frame.timestamp - this.firstFrameTimestamp
     this.frameQueue.push(frame)
     
     // Start render loop if not running
@@ -70,8 +78,11 @@ export class VideoRenderer {
       while (this.frameQueue.length > 0) {
         const frame = this.frameQueue[0]
         
+        // Use normalized timestamp (relative to first frame)
+        const frameTime = frame._normalizedTimestamp ?? frame.timestamp
+        
         // Check if frame should be displayed
-        if (frame.timestamp <= elapsed) {
+        if (frameTime <= elapsed) {
           this.frameQueue.shift()
           this.renderFrame(frame)
         } else {
@@ -109,6 +120,7 @@ export class VideoRenderer {
       } catch (_) {}
     }
     this.frameQueue = []
+    this.firstFrameTimestamp = null
     
     // Clear canvas
     if (this.ctx) {

@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import VideoPlayerBase from './VideoPlayerBase'
+import { PlayerLogProvider } from './PlayerLogContext.jsx'
+import PlayerLogConsole from './PlayerLogConsole'
 
 // Import players from the new player module
 import { 
@@ -91,8 +93,11 @@ export default function VideoDemos() {
           </div>
         </div>
 
-        <div className="animate-fade-in" key={`${technology}-${flavor}`}>
-          {renderDemo()}
+        <div className="animate-fade-in space-y-0" key={`${technology}-${flavor}`}>
+          <PlayerLogProvider>
+            {renderDemo()}
+            <PlayerLogConsole />
+          </PlayerLogProvider>
         </div>
       </div>
     </section>

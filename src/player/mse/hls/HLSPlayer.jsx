@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from 'react'
 import { HLSLoader } from './hlsLoader.js'
 import { getSampleUrl } from '../../../config/samples.js'
+import { usePlayerLog } from '../../../components/VideoDemos/PlayerLogContext.jsx'
 
 /**
  * MSE + HLS Player Component (CMAF/fMP4 only)
@@ -10,13 +11,15 @@ export default function HLSPlayer({ url, VideoWrapper }) {
   const loaderRef = useRef(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  
+  const logCtx = usePlayerLog()
+  const onLog = logCtx ? (level, message, detail) => logCtx.addLog(level, message, detail) : undefined
+
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    
+
     const sourceUrl = url || getSampleUrl('HLS')
-    const loader = new HLSLoader(video, sourceUrl)
+    const loader = new HLSLoader(video, sourceUrl, { onLog })
     loaderRef.current = loader
     
     setLoading(true)

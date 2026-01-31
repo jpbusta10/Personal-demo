@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from 'react'
 import { DASHLoader } from './dashLoader.js'
 import { getSampleUrl } from '../../../config/samples.js'
+import { usePlayerLog } from '../../../components/VideoDemos/PlayerLogContext.jsx'
 
 /**
  * MSE + DASH Player Component (CMAF/fMP4)
@@ -10,13 +11,15 @@ export default function DASHPlayer({ url, VideoWrapper }) {
   const loaderRef = useRef(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  
+  const logCtx = usePlayerLog()
+  const onLog = logCtx ? (level, message, detail) => logCtx.addLog(level, message, detail) : undefined
+
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    
+
     const sourceUrl = url || getSampleUrl('DASH')
-    const loader = new DASHLoader(video, sourceUrl)
+    const loader = new DASHLoader(video, sourceUrl, { onLog })
     loaderRef.current = loader
     
     setLoading(true)
