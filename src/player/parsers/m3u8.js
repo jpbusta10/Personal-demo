@@ -7,7 +7,7 @@
  * Parse an m3u8 manifest
  * @param {string} text - Raw m3u8 content
  * @param {string} baseUrl - Manifest URL (used to resolve relative URIs)
- * @returns {{ initSegment: string | null, segments: string[], variantPlaylists: string[] }}
+ * @returns {{ initSegment: string | null, segments: Array<string | { url: string, duration: number | null }>, variantPlaylists: string[] }}
  */
 export function parseM3u8(text, baseUrl) {
   const base = baseUrl.replace(/\/[^/]*$/, '/')
@@ -15,6 +15,7 @@ export function parseM3u8(text, baseUrl) {
   let initSegment = null
   const segments = []
   const variantPlaylists = []
+  let pendingDuration = null
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
@@ -38,9 +39,13 @@ export function parseM3u8(text, baseUrl) {
     
     // Media segment
     if (line.startsWith('#EXTINF:')) {
+      const match = line.match(/^#EXTINF:([\d.]+)/)
+      pendingDuration = match ? parseFloat(match[1]) : null
       const next = lines[i + 1]
       if (next && !next.startsWith('#')) {
-        segments.push(resolveUrl(next, base))
+        const url = resolveUrl(next, base)
+        segments.push({ url, duration: Number.isFinite(pendingDuration) ? pendingDuration : null })
+        pendingDuration = null
         i++
       }
     }
@@ -69,7 +74,7 @@ export function resolveUrl(uri, base) {
  * Load HLS manifest, following variant playlists if needed
  * @param {string} url - Manifest URL
  * @param {AbortSignal} signal - Abort signal
- * @returns {Promise<{ initSegment: string | null, segments: string[] }>}
+ * @returns {Promise<{ initSegment: string | null, segments: Array<string | { url: string, duration: number | null }> }>}
  */
 export async function loadHlsManifest(url, signal) {
   const response = await fetch(url, { signal })

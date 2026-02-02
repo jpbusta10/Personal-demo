@@ -15,6 +15,10 @@ export class VideoRenderer {
     this.lastFrameTime = 0
     this.startTime = 0
     this.firstFrameTimestamp = null // For normalizing timestamps
+    this.clockFn = null
+    this.baseTimestampUs = null
+    this.paused = false
+    this.pausedElapsedUs = 0
     this.rafId = null
   }
   
@@ -23,13 +27,13 @@ export class VideoRenderer {
    * @param {VideoFrame} frame
    */
   queueFrame(frame) {
-    // Normalize timestamp relative to first frame
-    if (this.firstFrameTimestamp === null) {
+    // Normalize timestamp relative to first frame (performance clock fallback)
+    if (this.clockFn === null && this.firstFrameTimestamp === null) {
       this.firstFrameTimestamp = frame.timestamp
     }
-    
-    // Store normalized timestamp for rendering
-    frame._normalizedTimestamp = frame.timestamp - this.firstFrameTimestamp
+    if (this.clockFn === null && this.firstFrameTimestamp !== null) {
+      frame._normalizedTimestamp = frame.timestamp - this.firstFrameTimestamp
+    }
     this.frameQueue.push(frame)
     
     // Start render loop if not running
@@ -67,18 +71,27 @@ export class VideoRenderer {
     
     this.rendering = true
     this.startTime = performance.now()
+    this.paused = false
+    this.pausedElapsedUs = 0
     
     const renderLoop = () => {
       if (!this.rendering) return
       
       const now = performance.now()
-      const elapsed = (now - this.startTime) * 1000 // Convert to microseconds
+      const elapsed = this.clockFn && this.baseTimestampUs !== null
+        ? this.clockFn() - this.baseTimestampUs
+        : (now - this.startTime) * 1000 // Convert to microseconds
+      
+      if (this.paused) {
+        this.rafId = requestAnimationFrame(renderLoop)
+        return
+      }
       
       // Render frames that should be displayed by now
       while (this.frameQueue.length > 0) {
         const frame = this.frameQueue[0]
         
-        // Use normalized timestamp (relative to first frame)
+        // Use normalized timestamp (performance clock) or absolute timestamp (audio clock)
         const frameTime = frame._normalizedTimestamp ?? frame.timestamp
         
         // Check if frame should be displayed
@@ -106,6 +119,19 @@ export class VideoRenderer {
       this.rafId = null
     }
   }
+
+  pause() {
+    if (!this.rendering || this.paused) return
+    const now = performance.now()
+    this.pausedElapsedUs = (now - this.startTime) * 1000
+    this.paused = true
+  }
+
+  resume() {
+    if (!this.rendering || !this.paused) return
+    this.startTime = performance.now() - this.pausedElapsedUs / 1000
+    this.paused = false
+  }
   
   /**
    * Clear the canvas and frame queue
@@ -121,6 +147,9 @@ export class VideoRenderer {
     }
     this.frameQueue = []
     this.firstFrameTimestamp = null
+    this.baseTimestampUs = null
+    this.paused = false
+    this.pausedElapsedUs = 0
     
     // Clear canvas
     if (this.ctx) {
@@ -140,6 +169,14 @@ export class VideoRenderer {
    */
   get queueSize() {
     return this.frameQueue.length
+  }
+
+  setClock(getTimeUs) {
+    this.clockFn = typeof getTimeUs === 'function' ? getTimeUs : null
+  }
+
+  setBaseTimestampUs(baseTimestampUs) {
+    this.baseTimestampUs = Number.isFinite(baseTimestampUs) ? baseTimestampUs : null
   }
 }
 

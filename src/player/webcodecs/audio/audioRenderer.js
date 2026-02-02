@@ -15,6 +15,9 @@ export class AudioRenderer {
     this.startTime = 0
     this.volume = 1.0
     this.gainNode = null
+    this.baseTimestampUs = null
+    this.baseAudioTime = null
+    this.onBaseTimestamp = null
   }
   
   /**
@@ -32,6 +35,15 @@ export class AudioRenderer {
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume()
     }
+
+    // Flush any queued audio data
+    if (this.audioQueue.length > 0) {
+      const queued = [...this.audioQueue]
+      this.audioQueue = []
+      for (const audioData of queued) {
+        this._scheduleAudio(audioData)
+      }
+    }
   }
   
   /**
@@ -40,11 +52,23 @@ export class AudioRenderer {
    */
   queueAudio(audioData) {
     if (!this.audioContext) {
-      audioData.close()
+      this.audioQueue.push(audioData)
       return
     }
-    
+    this._scheduleAudio(audioData)
+  }
+
+  _scheduleAudio(audioData) {
     try {
+      const timestampUs = Number.isFinite(audioData.timestamp) ? audioData.timestamp : null
+      if (timestampUs !== null) {
+        if (this.baseTimestampUs === null) {
+          this.baseTimestampUs = timestampUs
+          this.baseAudioTime = this.audioContext.currentTime
+          this.onBaseTimestamp?.(this.baseTimestampUs)
+        }
+      }
+
       // Convert AudioData to AudioBuffer
       const buffer = this.audioContext.createBuffer(
         audioData.numberOfChannels,
@@ -65,12 +89,16 @@ export class AudioRenderer {
       source.connect(this.gainNode)
       
       // Calculate when to play
-      if (this.nextPlayTime < this.audioContext.currentTime) {
-        this.nextPlayTime = this.audioContext.currentTime
+      let startTime = this.nextPlayTime
+      if (timestampUs !== null && this.baseTimestampUs !== null && this.baseAudioTime !== null) {
+        startTime = this.baseAudioTime + (timestampUs - this.baseTimestampUs) / 1e6
+      }
+      if (startTime < this.audioContext.currentTime) {
+        startTime = this.audioContext.currentTime
       }
       
-      source.start(this.nextPlayTime)
-      this.nextPlayTime += buffer.duration
+      source.start(startTime)
+      this.nextPlayTime = Math.max(this.nextPlayTime, startTime + buffer.duration)
       
       // Close the AudioData to release resources
       audioData.close()
@@ -90,6 +118,33 @@ export class AudioRenderer {
     if (this.gainNode) {
       this.gainNode.gain.value = this.volume
     }
+  }
+
+  async resume() {
+    if (!this.audioContext) return
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume()
+      this.nextPlayTime = this.audioContext.currentTime
+    }
+  }
+
+  async suspend() {
+    if (!this.audioContext) return
+    if (this.audioContext.state === 'running') {
+      await this.audioContext.suspend()
+    }
+  }
+
+  setBaseTimestampCallback(callback) {
+    this.onBaseTimestamp = typeof callback === 'function' ? callback : null
+  }
+
+  getCurrentTimeUs() {
+    return (this.audioContext?.currentTime || 0) * 1e6
+  }
+
+  getBaseTimestampUs() {
+    return this.baseTimestampUs
   }
   
   /**
@@ -118,6 +173,8 @@ export class AudioRenderer {
     }
     this.audioQueue = []
     this.nextPlayTime = this.audioContext?.currentTime || 0
+    this.baseTimestampUs = null
+    this.baseAudioTime = null
   }
   
   /**

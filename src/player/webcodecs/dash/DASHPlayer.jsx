@@ -13,10 +13,44 @@ import { usePlayerLog } from '../../../components/VideoDemos/PlayerLogContext.js
  */
 export default function DASHPlayer({ url, VideoWrapper }) {
   const canvasRef = useRef(null)
+  const videoRendererRef = useRef(null)
+  const audioRendererRef = useRef(null)
+  const audioDecoderRef = useRef(null)
+  const audioReadyRef = useRef(false)
+  const pendingAudioInitRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [muted, setMuted] = useState(false)
+  const [volume, setVolume] = useState(1)
   const logCtx = usePlayerLog()
   const addLog = logCtx ? (level, message, detail) => logCtx.addLog(level, message, detail) : () => {}
+
+  const enableAudio = async () => {
+    if (audioReadyRef.current) return
+    const audioRenderer = audioRendererRef.current
+    if (!audioRenderer) {
+      pendingAudioInitRef.current = true
+      return
+    }
+    try {
+      await audioRenderer.init()
+      await audioRenderer.resume?.()
+      audioReadyRef.current = true
+    } catch (err) {
+      addLog('warn', 'Audio context blocked. Click play to enable audio.', err?.message)
+    }
+  }
+
+  useEffect(() => {
+    const handler = () => {
+      enableAudio()
+      videoRendererRef.current?.resume?.()
+      setIsPlaying(true)
+    }
+    window.addEventListener('pointerdown', handler, { once: true })
+    return () => window.removeEventListener('pointerdown', handler)
+  }, [])
 
   useEffect(() => {
     if (!isVideoDecoderSupported()) {
@@ -68,6 +102,17 @@ export default function DASHPlayer({ url, VideoWrapper }) {
         // Create components
         const demuxer = new Demuxer()
         const videoRenderer = new VideoRenderer(canvas)
+        const audioRenderer = new AudioRenderer()
+        videoRendererRef.current = videoRenderer
+        audioRendererRef.current = audioRenderer
+        audioRenderer.setBaseTimestampCallback((baseTimestampUs) => {
+          videoRenderer.setClock(() => audioRenderer.getCurrentTimeUs())
+          videoRenderer.setBaseTimestampUs(baseTimestampUs)
+        })
+        if (pendingAudioInitRef.current) {
+          pendingAudioInitRef.current = false
+          await enableAudio()
+        }
 
         // Create video decoder with timed frame rendering
         const videoDecoder = new VideoDecoderWrapper(
@@ -98,15 +143,30 @@ export default function DASHPlayer({ url, VideoWrapper }) {
 
         addLog('info', `Init segment size: ${initData.byteLength} bytes`)
         const trackConfigs = demuxer.parseInit(initData)
-        addLog('info', 'Track configs', trackConfigs?.video ? { 
-          hasVideo: true, 
-          codec: trackConfigs.video.codec,
-          trackId: trackConfigs.video.trackId,
-          timescale: trackConfigs.video.timescale,
-          width: trackConfigs.video.codedWidth,
-          height: trackConfigs.video.codedHeight,
-          hasDescription: !!trackConfigs.video.description
-        } : { hasVideo: false })
+        addLog('info', 'Track configs', {
+          hasVideo: !!trackConfigs?.video,
+          video: trackConfigs?.video
+            ? {
+                codec: trackConfigs.video.codec,
+                trackId: trackConfigs.video.trackId,
+                timescale: trackConfigs.video.timescale,
+                width: trackConfigs.video.codedWidth,
+                height: trackConfigs.video.codedHeight,
+                hasDescription: !!trackConfigs.video.description
+              }
+            : null,
+          hasAudio: !!trackConfigs?.audio,
+          audio: trackConfigs?.audio
+            ? {
+                codec: trackConfigs.audio.codec,
+                trackId: trackConfigs.audio.trackId,
+                timescale: trackConfigs.audio.timescale,
+                sampleRate: trackConfigs.audio.sampleRate,
+                channels: trackConfigs.audio.channels,
+                hasDescription: !!trackConfigs.audio.description
+              }
+            : null
+        })
 
         // Configure video decoder
         if (trackConfigs.video) {
@@ -118,6 +178,27 @@ export default function DASHPlayer({ url, VideoWrapper }) {
         } else {
           addLog('error', 'No video track found in init segment')
           throw new Error('No video track found in init segment')
+        }
+
+        // Configure audio decoder if available
+        if (trackConfigs.audio && isAudioDecoderSupported()) {
+          const audioDecoder = new AudioDecoderWrapper(
+            (audioData) => audioRenderer.queueAudio(audioData),
+            (err) => addLog('error', 'Audio decode error', err?.message)
+          )
+          const audioConfigured = await audioDecoder.configure(trackConfigs.audio)
+          if (audioConfigured) {
+            audioDecoderRef.current = audioDecoder
+            addLog('info', 'Audio decoder configured', {
+              codec: trackConfigs.audio.codec,
+              sampleRate: trackConfigs.audio.sampleRate,
+              channels: trackConfigs.audio.channels
+            })
+          } else {
+            addLog('warn', 'Failed to configure audio decoder')
+          }
+        } else if (!trackConfigs.audio) {
+          addLog('info', 'No audio track found in init segment')
         }
 
         setLoading(false)
@@ -137,7 +218,7 @@ export default function DASHPlayer({ url, VideoWrapper }) {
             const segmentData = await response.arrayBuffer()
             if (abortController.signal.aborted) break
 
-            const { video } = demuxer.parseMedia(segmentData)
+            const { video, audio } = demuxer.parseMedia(segmentData, manifest.segmentDuration)
 
             // Log segment parsing results for first segment
             if (i === 0) {
@@ -153,6 +234,14 @@ export default function DASHPlayer({ url, VideoWrapper }) {
               if (abortController.signal.aborted) break
               videoDecoder.decode(sample)
             }
+
+            // Decode audio samples
+            if (audioDecoderRef.current) {
+              for (const sample of audio) {
+                if (abortController.signal.aborted) break
+                audioDecoderRef.current.decode(sample)
+              }
+            }
           } catch (err) {
             if (err.name === 'AbortError') break
             addLog('warn', `Segment ${i}: ${err.message}`)
@@ -161,7 +250,10 @@ export default function DASHPlayer({ url, VideoWrapper }) {
 
         addLog('info', 'Flushing decoder')
         await videoDecoder.flush()
+        await audioDecoderRef.current?.flush?.()
         videoDecoder.close()
+        audioDecoderRef.current?.close()
+        audioDecoderRef.current = null
         addLog('info', 'Playback ready')
       } catch (err) {
         if (err.name !== 'AbortError' && !/abort/i.test(err.message || '')) {
@@ -178,17 +270,75 @@ export default function DASHPlayer({ url, VideoWrapper }) {
       abortController.abort()
       decoderRef.current?.close()
       decoderRef.current = null
+      audioDecoderRef.current?.close()
+      audioDecoderRef.current = null
+      videoRendererRef.current?.clear?.()
+      audioRendererRef.current?.close?.()
+      videoRendererRef.current = null
+      audioRendererRef.current = null
     }
   }, [url])
+
+  useEffect(() => {
+    const audioRenderer = audioRendererRef.current
+    if (!audioRenderer) return
+    const nextVolume = muted ? 0 : volume
+    audioRenderer.setVolume(nextVolume)
+  }, [muted, volume])
+
+  const handlePlayPause = async () => {
+    const videoRenderer = videoRendererRef.current
+    const audioRenderer = audioRendererRef.current
+    if (!videoRenderer || !audioRenderer) return
+
+    if (isPlaying) {
+      videoRenderer.pause?.()
+      await audioRenderer.suspend?.()
+      setIsPlaying(false)
+    } else {
+      await enableAudio()
+      videoRenderer.resume?.()
+      setIsPlaying(true)
+    }
+  }
   
   const content = (
-    <canvas 
-      ref={canvasRef}
-      className="w-full h-full bg-black"
-      width={1280}
-      height={720}
-      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-    />
+    <div className="relative w-full h-full">
+      <canvas 
+        ref={canvasRef}
+        className="w-full h-full bg-black"
+        width={1280}
+        height={720}
+        style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+      />
+      <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-xs p-2 flex items-center gap-3">
+        <button
+          type="button"
+          className="px-2 py-1 bg-white/10 rounded hover:bg-white/20"
+          onClick={handlePlayPause}
+        >
+          {isPlaying ? 'Pause' : 'Play'}
+        </button>
+        <button
+          type="button"
+          className="px-2 py-1 bg-white/10 rounded hover:bg-white/20"
+          onClick={() => setMuted((v) => !v)}
+        >
+          {muted ? 'Unmute' : 'Mute'}
+        </button>
+        <div className="flex items-center gap-2">
+          <span>Vol</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={volume}
+            onChange={(e) => setVolume(parseFloat(e.target.value))}
+          />
+        </div>
+      </div>
+    </div>
   )
   
   const errorMessage = error ? (

@@ -136,6 +136,21 @@ function getEsds(data, stsdOffset, stsdSize) {
   return null
 }
 
+function parseAacAudioObjectType(audioSpecificConfig) {
+  if (!audioSpecificConfig || audioSpecificConfig.length < 2) return null
+  // AudioSpecificConfig: 5 bits audioObjectType, 4 bits samplingFrequencyIndex, 4 bits channelConfig
+  const byte0 = audioSpecificConfig[0]
+  const byte1 = audioSpecificConfig[1]
+  let audioObjectType = (byte0 >> 3) & 0x1f
+  if (audioObjectType === 31 && audioSpecificConfig.length >= 3) {
+    // escape value: read next 6 bits
+    const byte2 = audioSpecificConfig[2]
+    audioObjectType = 32 + ((byte0 & 0x07) << 3) + ((byte1 >> 5) & 0x07)
+    // note: this is a simplified escape handling; good enough for common AAC
+  }
+  return audioObjectType || null
+}
+
 /**
  * Get track_id from tkhd box inside a trak
  */
@@ -304,10 +319,16 @@ function extractTrackConfigsFromStsd(view, stsd, result, trackId, timescale) {
   const mp4a = findBox(view, 'mp4a', stsd.offset + 8, stsd.offset + stsd.size)
   if (mp4a && !result.audio) {
     const esds = getEsds(view, stsd.offset, stsd.size)
-    const sampleRate = readU32(view, mp4a.offset + 16) >> 16
-    const channels = readU16(view, mp4a.offset + 8)
+    const audioObjectType = parseAacAudioObjectType(esds)
+    // mp4a sample entry:
+    // 6 bytes reserved, 2 bytes data_reference_index,
+    // 8 bytes reserved, 2 bytes channelcount,
+    // 2 bytes samplesize, 2 bytes pre_defined, 2 bytes reserved,
+    // 4 bytes samplerate (16.16 fixed)
+    const channels = readU16(view, mp4a.offset + 16)
+    const sampleRate = readU32(view, mp4a.offset + 24) >> 16
     result.audio = {
-      codec: 'mp4a.40.2',
+      codec: `mp4a.40.${audioObjectType || 2}`,
       sampleRate: sampleRate || 44100,
       channels: channels || 2,
       description: esds ? new Uint8Array(esds) : null,
@@ -322,9 +343,17 @@ function extractTrackConfigsFromStsd(view, stsd, result, trackId, timescale) {
  * @param {ArrayBuffer} data
  * @param {number} trackId - Actual track ID from init segment (not array index)
  * @param {number} timescale - Timescale from init segment (ticks per second)
+ * @param {number | null} segmentDurationSec - Duration of segment in seconds (if known)
+ * @param {number | null} baseDecodeTimeOverride - Base decode time in track timescale ticks
  * @returns {{ samples: Array<{ type: string, timestamp: number, duration: number, data: Uint8Array }> }}
  */
-export function parseMediaSegment(data, trackId = 1, timescale = 90000) {
+export function parseMediaSegment(
+  data,
+  trackId = 1,
+  timescale = 90000,
+  segmentDurationSec = null,
+  baseDecodeTimeOverride = null
+) {
   const view = new Uint8Array(data)
   const samples = []
   
@@ -378,8 +407,9 @@ export function parseMediaSegment(data, trackId = 1, timescale = 90000) {
       // 32-bit baseMediaDecodeTime
       baseDecodeTime = readU32(view, tfdt.offset + 4)
     }
-  } else {
-    console.warn('parseMediaSegment: no tfdt box found for track', trackId)
+  }
+  if (baseDecodeTimeOverride !== null && Number.isFinite(baseDecodeTimeOverride)) {
+    baseDecodeTime = baseDecodeTimeOverride
   }
   
   // Get default sample duration from tfhd
@@ -444,6 +474,11 @@ export function parseMediaSegment(data, trackId = 1, timescale = 90000) {
   let timestamp = baseDecodeTime
   let sampleOffset = dataOffset
   
+  // If per-sample duration is missing and segment duration is known, compute per-sample duration
+  const computedDuration = !hasDuration && segmentDurationSec && sampleCount > 0
+    ? Math.max(1, Math.round((segmentDurationSec * timescale) / sampleCount))
+    : null
+
   for (let i = 0; i < sampleCount; i++) {
     let duration = defaultDuration
     let size = 0
@@ -452,6 +487,8 @@ export function parseMediaSegment(data, trackId = 1, timescale = 90000) {
     if (hasDuration) {
       duration = readU32(view, pos)
       pos += 4
+    } else if (computedDuration) {
+      duration = computedDuration
     }
     if (hasSize) {
       size = readU32(view, pos)
@@ -490,6 +527,7 @@ export function parseMediaSegment(data, trackId = 1, timescale = 90000) {
       trunFlags: '0x' + flags.toString(16),
       hasDuration,
       defaultDuration,
+      baseDecodeTime,
       firstDurationMs: Math.round(first.duration / 1000),
       firstTimestampMs: Math.round(first.timestamp / 1000),
       lastTimestampMs: Math.round(last.timestamp / 1000),

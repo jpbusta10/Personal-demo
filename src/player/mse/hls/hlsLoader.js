@@ -114,7 +114,9 @@ export class HLSLoader {
         if (this.abortController.signal.aborted) break
 
         try {
-          const response = await fetch(manifest.segments[i], {
+          const segment = manifest.segments[i]
+          const segmentUrl = typeof segment === 'string' ? segment : segment.url
+          const response = await fetch(segmentUrl, {
             signal: this.abortController.signal
           })
           if (!response.ok) {

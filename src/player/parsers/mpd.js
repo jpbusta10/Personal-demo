@@ -7,7 +7,7 @@
  * Parse an MPD manifest
  * @param {string} xml - Raw MPD XML
  * @param {string} baseUrl - MPD URL (used to resolve relative URIs)
- * @returns {{ initSegment: string | null, segments: string[], mimeType: string }}
+ * @returns {{ initSegment: string | null, segments: string[], mimeType: string, segmentDuration: number | null }}
  */
 export function parseMpd(xml, baseUrl) {
   const base = baseUrl.replace(/\/[^/]*$/, '/')
@@ -19,6 +19,7 @@ export function parseMpd(xml, baseUrl) {
   let initSegment = null
   let segments = []
   let mimeType = 'video/mp4; codecs="avc1.42E01E"'
+  let segmentDuration = null
 
   const representation = doc.querySelector('Representation') || doc.querySelector('AdaptationSet Representation')
   const adaptationSet = doc.querySelector('AdaptationSet')
@@ -54,6 +55,7 @@ export function parseMpd(xml, baseUrl) {
     const start = parseInt(segmentTemplate.getAttribute('startNumber') || '1', 10)
     const duration = parseFloat(segmentTemplate.getAttribute('duration') || '0')
     const timescale = parseFloat(segmentTemplate.getAttribute('timescale') || '1')
+    segmentDuration = duration && timescale ? duration / timescale : null
     
     if (media) {
       const repId = rep.getAttribute('id') || '0'
@@ -91,7 +93,7 @@ export function parseMpd(xml, baseUrl) {
     }
   }
 
-  return { initSegment, segments, mimeType }
+  return { initSegment, segments, mimeType, segmentDuration }
 }
 
 /**
@@ -115,7 +117,7 @@ export function resolveUrl(uri, base) {
  * Load DASH manifest
  * @param {string} url - MPD URL
  * @param {AbortSignal} signal - Abort signal
- * @returns {Promise<{ initSegment: string | null, segments: string[], mimeType: string }>}
+ * @returns {Promise<{ initSegment: string | null, segments: string[], mimeType: string, segmentDuration: number | null }>}
  */
 export async function loadDashManifest(url, signal) {
   const response = await fetch(url, { signal })

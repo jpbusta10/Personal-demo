@@ -27,7 +27,7 @@ export class AudioDecoderWrapper {
    * Configure the decoder with codec info from init segment
    * @param {{ codec: string, sampleRate: number, channels: number, description?: Uint8Array }} config
    */
-  configure(config) {
+  async configure(config) {
     if (!isAudioDecoderSupported()) {
       this.onError?.(new Error('AudioDecoder not supported'))
       return false
@@ -55,6 +55,16 @@ export class AudioDecoderWrapper {
         decoderConfig.description = config.description
       }
       
+      try {
+        const support = await AudioDecoder.isConfigSupported(decoderConfig)
+        if (!support.supported) {
+          this.onError?.(new Error(`Audio codec ${decoderConfig.codec} not supported`))
+          return false
+        }
+      } catch (_) {
+        // ignore support check errors
+      }
+
       this.decoder.configure(decoderConfig)
       this.configured = true
       return true
